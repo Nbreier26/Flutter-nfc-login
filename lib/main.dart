@@ -5,7 +5,6 @@ import 'package:nfc_manager/nfc_manager.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  // Inicializa o Firebase com as credenciais
   await Firebase.initializeApp(
     options: FirebaseOptions(
       apiKey: "AIzaSyDoVzmzbtzrlWO3ZKqcYLdEXW0FCwazyCo",
@@ -40,8 +39,7 @@ class _NfcLoginScreenState extends State<NfcLoginScreen> {
       FirebaseDatabase.instance.ref().child('nfcTags');
 
   bool _isLoggedIn = false;
-  bool _isAddingTag = false;
-  bool _hasTags = false; // Flag para indicar se há alguma tag registrada
+  bool _hasTags = false; // Indica se há alguma tag registrada
 
   @override
   void initState() {
@@ -81,8 +79,8 @@ class _NfcLoginScreenState extends State<NfcLoginScreen> {
     _showMessage('Todas as tags foram removidas');
   }
 
-  // Inicia a leitura NFC
-  Future<void> _startNfcScan() async {
+  // Inicia a leitura NFC com o modo indicado: login ou adição
+  Future<void> _startNfcScan({required bool isAdding}) async {
     try {
       await NfcManager.instance.startSession(
         onDiscovered: (NfcTag tag) async {
@@ -90,19 +88,15 @@ class _NfcLoginScreenState extends State<NfcLoginScreen> {
           if (identifier == null) return;
           await NfcManager.instance.stopSession();
 
-          // Se não houver nenhuma tag, registra a primeira sem exigir login
+          // Se não houver nenhuma tag cadastrada, registra a primeira sem exigir login
           if (!_hasTags) {
             await _registerTag(identifier);
             _showMessage('Tag inicial registrada! Faça login.');
             return;
           }
 
-          if (_isAddingTag) {
-            if (!_isLoggedIn) {
-              _showMessage('Faça login primeiro para adicionar tags');
-              return;
-            }
-            // Verifica se a tag já existe
+          // Modo de adição: se o usuário está logado, registra nova tag se ainda não existir
+          if (isAdding) {
             final snap = await _databaseRef.child(identifier).get();
             if (!snap.exists) {
               await _registerTag(identifier);
@@ -111,7 +105,7 @@ class _NfcLoginScreenState extends State<NfcLoginScreen> {
               _showMessage('Tag já está registrada!');
             }
           } else {
-            // Fluxo de login: verifica se a tag existe
+            // Modo login: verifica se a tag existe para realizar o login
             final snap = await _databaseRef.child(identifier).get();
             if (snap.exists) {
               setState(() => _isLoggedIn = true);
@@ -132,28 +126,27 @@ class _NfcLoginScreenState extends State<NfcLoginScreen> {
     }
   }
 
-  // Extrai o identificador da tag lida
+  // Extrai o identificador da tag lida e o formata de forma válida para o Firebase
   String? _getTagId(NfcTag tag) {
     try {
-      final identifier = tag.data['identifier']?.toString() ??
-          tag.data['ndef']['identifier']?.toString();
-      return identifier?.replaceAll(RegExp(r'[^\x20-\x7E]'), '');
+      final dynamic idData = tag.data['identifier'] ?? tag.data['ndef']['identifier'];
+      if (idData is List) {
+        // Converte a lista de inteiros para uma string hexadecimal sem caracteres inválidos
+        return idData.map((e) => e.toRadixString(16).padLeft(2, '0')).join();
+      } else if (idData is String) {
+        return idData.replaceAll(RegExp(r'[^\x20-\x7E]'), '');
+      }
     } catch (e) {
       return null;
     }
+    return null;
   }
 
   // Faz logout e reseta os estados
   void _logout() {
     setState(() {
       _isLoggedIn = false;
-      _isAddingTag = false;
     });
-  }
-
-  // Alterna o modo de adição de nova tag
-  void _toggleAddMode() {
-    setState(() => _isAddingTag = !_isAddingTag);
   }
 
   // Exibe uma mensagem para o usuário
@@ -187,22 +180,14 @@ class _NfcLoginScreenState extends State<NfcLoginScreen> {
                   ElevatedButton(onPressed: _logout, child: Text('Logout')),
                   SizedBox(height: 10),
                   ElevatedButton(
-                    onPressed: _toggleAddMode,
-                    child: Text(_isAddingTag ? 'Cancelar Adição' : 'Adicionar Nova Tag'),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: _isAddingTag ? Colors.green : null,
-                    ),
-                  ),
-                  SizedBox(height: 10),
-                  ElevatedButton(
-                    onPressed: _startNfcScan,
-                    child: Text('Ler NFC para Adicionar Tag'),
+                    onPressed: () => _startNfcScan(isAdding: true),
+                    child: Text('Adicionar Tag'),
                   ),
                 ],
               )
             else
               ElevatedButton(
-                onPressed: _startNfcScan,
+                onPressed: () => _startNfcScan(isAdding: false),
                 child: Text(!_hasTags ? 'Registrar Primeira Tag' : 'Login com NFC'),
               ),
           ],
