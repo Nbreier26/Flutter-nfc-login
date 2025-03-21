@@ -1,8 +1,20 @@
 import 'package:flutter/material.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_database/firebase_database.dart';
 import 'package:nfc_manager/nfc_manager.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  // Inicializa o Firebase com as credenciais
+  await Firebase.initializeApp(
+    options: FirebaseOptions(
+      apiKey: "AIzaSyDoVzmzbtzrlWO3ZKqcYLdEXW0FCwazyCo",
+      appId: "1:1008143527601:android:d4bba7f297b6b445737c90",
+      messagingSenderId: "1008143527601",
+      projectId: "flutter-c024f",
+      databaseURL: "https://flutter-c024f-default-rtdb.firebaseio.com/",
+    ),
+  );
   runApp(MyApp());
 }
 
@@ -23,14 +35,18 @@ class NfcLoginScreen extends StatefulWidget {
 }
 
 class _NfcLoginScreenState extends State<NfcLoginScreen> {
-  List<String> _savedTags = [];
+  // Referência para o nó 'nfcTags' no Realtime Database
+  final DatabaseReference _databaseRef =
+      FirebaseDatabase.instance.ref().child('nfcTags');
+
   bool _isLoggedIn = false;
   bool _isAddingTag = false;
+  bool _hasTags = false; // Flag para indicar se há alguma tag registrada
 
   @override
   void initState() {
     super.initState();
-    _loadSavedTags();
+    _checkExistingTags();
   }
 
   @override
@@ -39,62 +55,65 @@ class _NfcLoginScreenState extends State<NfcLoginScreen> {
     super.dispose();
   }
 
-  Future<void> _loadSavedTags() async {
-    final prefs = await SharedPreferences.getInstance();
+  // Verifica se há tags registradas no Firebase
+  Future<void> _checkExistingTags() async {
+    final snapshot = await _databaseRef.get();
     setState(() {
-      _savedTags = prefs.getStringList('nfcTags') ?? [];
+      _hasTags = snapshot.exists;
     });
   }
 
-  Future<void> _saveTags() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setStringList('nfcTags', _savedTags);
-    await _loadSavedTags();
+  // Registra a tag no Firebase
+  Future<void> _registerTag(String tagId) async {
+    await _databaseRef.child(tagId).set(true);
+    setState(() {
+      _hasTags = true;
+    });
   }
 
+  // Remove todas as tags do Firebase
   Future<void> _resetTags() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove('nfcTags');
+    await _databaseRef.remove();
     setState(() {
-      _savedTags = [];
       _isLoggedIn = false;
+      _hasTags = false;
     });
     _showMessage('Todas as tags foram removidas');
   }
 
+  // Inicia a leitura NFC
   Future<void> _startNfcScan() async {
     try {
       await NfcManager.instance.startSession(
         onDiscovered: (NfcTag tag) async {
           final identifier = _getTagId(tag);
           if (identifier == null) return;
-
           await NfcManager.instance.stopSession();
 
-          if (_savedTags.isEmpty) {
-            // Primeiro registro sem necessidade de login
-            _savedTags.add(identifier);
-            await _saveTags();
+          // Se não houver nenhuma tag, registra a primeira sem exigir login
+          if (!_hasTags) {
+            await _registerTag(identifier);
             _showMessage('Tag inicial registrada! Faça login.');
             return;
           }
 
           if (_isAddingTag) {
             if (!_isLoggedIn) {
-              
               _showMessage('Faça login primeiro para adicionar tags');
               return;
             }
-            
-            if (!_savedTags.contains(identifier)) {
-              _savedTags.add(identifier);
-              await _saveTags();
+            // Verifica se a tag já existe
+            final snap = await _databaseRef.child(identifier).get();
+            if (!snap.exists) {
+              await _registerTag(identifier);
               _showMessage('Tag adicionada com sucesso!');
             } else {
               _showMessage('Tag já está registrada!');
             }
           } else {
-            if (_savedTags.contains(identifier)) {
+            // Fluxo de login: verifica se a tag existe
+            final snap = await _databaseRef.child(identifier).get();
+            if (snap.exists) {
               setState(() => _isLoggedIn = true);
               _showMessage('Login realizado com sucesso!');
             } else {
@@ -113,31 +132,34 @@ class _NfcLoginScreenState extends State<NfcLoginScreen> {
     }
   }
 
+  // Extrai o identificador da tag lida
   String? _getTagId(NfcTag tag) {
     try {
-      final identifier = tag.data['identifier']?.toString() ?? 
-                       tag.data['ndef']['identifier']?.toString();
+      final identifier = tag.data['identifier']?.toString() ??
+          tag.data['ndef']['identifier']?.toString();
       return identifier?.replaceAll(RegExp(r'[^\x20-\x7E]'), '');
     } catch (e) {
       return null;
     }
   }
 
+  // Faz logout e reseta os estados
   void _logout() {
     setState(() {
       _isLoggedIn = false;
-      _isAddingTag = false; // Resetar modo de adição ao fazer logout
+      _isAddingTag = false;
     });
   }
 
+  // Alterna o modo de adição de nova tag
   void _toggleAddMode() {
     setState(() => _isAddingTag = !_isAddingTag);
   }
 
+  // Exibe uma mensagem para o usuário
   void _showMessage(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message)),
-    );
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
   }
 
   @override
@@ -146,12 +168,11 @@ class _NfcLoginScreenState extends State<NfcLoginScreen> {
       appBar: AppBar(
         title: Text('NFC Login'),
         actions: [
-          if (_savedTags.isNotEmpty)
-            IconButton(
-              icon: Icon(Icons.delete),
-              onPressed: _resetTags,
-              tooltip: 'Resetar todas as tags',
-            ),
+          IconButton(
+            icon: Icon(Icons.delete),
+            onPressed: _resetTags,
+            tooltip: 'Resetar todas as tags',
+          ),
         ],
       ),
       body: Center(
@@ -163,10 +184,7 @@ class _NfcLoginScreenState extends State<NfcLoginScreen> {
                 children: [
                   Text('Usuário Logado', style: TextStyle(fontSize: 24)),
                   SizedBox(height: 20),
-                  ElevatedButton(
-                    onPressed: _logout,
-                    child: Text('Logout'),
-                  ),
+                  ElevatedButton(onPressed: _logout, child: Text('Logout')),
                   SizedBox(height: 10),
                   ElevatedButton(
                     onPressed: _toggleAddMode,
@@ -175,33 +193,17 @@ class _NfcLoginScreenState extends State<NfcLoginScreen> {
                       backgroundColor: _isAddingTag ? Colors.green : null,
                     ),
                   ),
+                  SizedBox(height: 10),
+                  ElevatedButton(
+                    onPressed: _startNfcScan,
+                    child: Text('Ler NFC para Adicionar Tag'),
+                  ),
                 ],
               )
             else
               ElevatedButton(
                 onPressed: _startNfcScan,
-                child: Text(_savedTags.isEmpty 
-                    ? 'Registrar Primeira Tag' 
-                    : 'Login com NFC'),
-              ),
-            SizedBox(height: 20),
-            if (_savedTags.isNotEmpty)
-              Column(
-                children: [
-                  Text('Tags Registradas:', style: TextStyle(fontSize: 16)),
-                  SizedBox(height: 10),
-                  Container(
-                    height: 100,
-                    width: 200,
-                    child: ListView.builder(
-                      itemCount: _savedTags.length,
-                      itemBuilder: (context, index) => Text(
-                        'Tag ${index + 1}: ${_savedTags[index].substring(0, 8)}...',
-                        textAlign: TextAlign.center,
-                      ),
-                    ),
-                  ),
-                ],
+                child: Text(!_hasTags ? 'Registrar Primeira Tag' : 'Login com NFC'),
               ),
           ],
         ),
